@@ -1,484 +1,383 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
+import './App.css';
 
-// Compact ERC-20 ABI definitions for token allowance monitoring
+// ─── Contract ABIs ───────────────────────────────────────────────
 const USDT_ABI = [
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 value) returns (bool)",
   "function balanceOf(address account) view returns (uint256)",
-  "function mint(address to, uint256 amount) returns (bool)"
+  "function mint(address to, uint256 amount)"
 ];
 
-// Compact application ABI definitions for LendChain interactions
 const LENDCHAIN_ABI = [
-  "function fundLoan(uint256 _loanId) external payable", 
-  "function repayLoan(uint256 _loanId) external"
+  "function createLoanRequest(uint256 _loanAmount, uint256 _collateralAmount, uint256 _interestRate, uint256 _duration) external returns (uint256)",
+  "function submitCounterOffer(uint256 _loanId, uint256 _interestRate, uint256 _duration) external",
+  "function acceptCounterOffer(uint256 _loanId) external",
+  "function rejectCounterOffer(uint256 _loanId) external",
+  "function depositCollateral(uint256 _loanId) external payable",
+  "function fundLoan(uint256 _loanId) external",
+  "function repayLoan(uint256 _loanId) external",
+  "function claimCollateral(uint256 _loanId) external",
+  "function loanCount() view returns (uint256)",
+  "function loans(uint256) view returns (address borrower, address lender, uint256 loanAmount, uint256 collateralAmount, uint256 interestRate, uint256 duration, uint256 repaymentDeadline, uint8 loanStatus, bool hasCounterOffer)",
+  "function usdtToken() view returns (address)"
 ];
 
-// Preserving your exact successful contract deployment addresses
-const LendChainContractAddress = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"; 
-const UsdtContractAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+// Update these after each redeployment
+const LENDCHAIN_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+const USDT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+
+const STATUS = ["Pending", "Active", "Repaid", "Defaulted"];
 
 function App() {
   const [account, setAccount] = useState("");
   const [provider, setProvider] = useState(null);
   const [signer, setSigner] = useState(null);
-  const [txStatus, setTxStatus] = useState("idle"); 
-  const [currentAllowance, setCurrentAllowance] = useState(0);
-  
-  // Dynamic Web3 wallet balance states
-  const [usdtBalance, setUsdtBalance] = useState("0");
+  const [txStatus, setTxStatus] = useState("idle");
+  const [txMessage, setTxMessage] = useState("");
   const [ethBalance, setEthBalance] = useState("0");
-  const [activeTab, setActiveTab] = useState("market"); // market | create | dashboard
-  
-  // State for custom deposit amounts
+  const [usdtBalance, setUsdtBalance] = useState("0");
+  const [activeTab, setActiveTab] = useState("market");
+  const [loans, setLoans] = useState([]);
   const [depositAmount, setDepositAmount] = useState("1000");
-
-  // State for custom counter offer APR fields
   const [counterInputs, setCounterInputs] = useState({});
-  
-  // State tracking dynamic specific card execution contexts
-  const [activeLoanId, setActiveLoanId] = useState(null);
-  
-  // Form submission state for Lenders creating new offers
-  const [formData, setFormData] = useState({ amount: "100", collateral: "0.15", interest: '10', duration: "30" });
+  const [formData, setFormData] = useState({ amount: "100", collateral: "0.15", interest: "5", duration: "604800" });
 
-  // 20 Active Mock Pools (Tất cả bắt đầu bằng trạng thái Available để mục Active Positions trống sẵn)
-  const [loans, setLoans] = useState([
-    { id: 1, lender: "0xf39Fd...2266", amount: 100, collateralRequired: 0.05, interest: 10, duration: 30, status: "Available", hasCounter: false },
-    { id: 2, lender: "0x70991...7a65", amount: 500, collateralRequired: 0.25, interest: 12, duration: 60, status: "Available", hasCounter: false },
-    { id: 3, lender: "0x3C44C...3829", amount: 1200, collateralRequired: 0.60, interest: 8.5, duration: 90, status: "Available", hasCounter: false },
-    { id: 4, lender: "0x90F79...1722", amount: 250, collateralRequired: 0.12, interest: 11, duration: 14, status: "Available", hasCounter: false },
-    { id: 5, lender: "0x15d34...6371", amount: 3000, collateralRequired: 1.50, interest: 7.8, duration: 180, status: "Available", hasCounter: false },
-    { id: 6, lender: "0x23616...8110", amount: 750, collateralRequired: 0.35, interest: 9.2, duration: 45, status: "Available", hasCounter: false },
-    { id: 7, lender: "0xcd3B7...4411", amount: 150, collateralRequired: 0.08, interest: 13.5, duration: 7, status: "Available", hasCounter: false },
-    { id: 8, lender: "0xa0Ee7...9281", amount: 4500, collateralRequired: 2.20, interest: 6.9, duration: 365, status: "Available", hasCounter: false },
-    { id: 9, lender: "0xBcd40...5521", amount: 800, collateralRequired: 0.40, interest: 9.8, duration: 30, status: "Available", hasCounter: false },
-    { id: 10, lender: "0x71C76...9923", amount: 2000, collateralRequired: 1.00, interest: 8.2, duration: 120, status: "Available", hasCounter: false },
-    { id: 11, lender: "0x32174...1122", amount: 350, collateralRequired: 0.18, interest: 10.5, duration: 21, status: "Available", hasCounter: false },
-    { id: 12, lender: "0xAAeE8...8833", amount: 6000, collateralRequired: 3.10, interest: 7.2, duration: 270, status: "Available", hasCounter: false },
-    { id: 13, lender: "0xF339b...4455", amount: 120, collateralRequired: 0.06, interest: 14, duration: 14, status: "Available", hasCounter: false },
-    { id: 14, lender: "0x2281a...9900", amount: 950, collateralRequired: 0.48, interest: 9.0, duration: 60, status: "Available", hasCounter: false },
-    { id: 15, lender: "0x88CcB...1122", amount: 1500, collateralRequired: 0.75, interest: 8.8, duration: 90, status: "Available", hasCounter: false },
-    { id: 16, lender: "0x99bBd...3344", amount: 400, collateralRequired: 0.20, interest: 11.5, duration: 30, status: "Available", hasCounter: false },
-    { id: 17, lender: "0x55aaF...7788", amount: 8000, collateralRequired: 4.15, interest: 6.5, duration: 365, status: "Available", hasCounter: false },
-    { id: 18, lender: "0xddEE9...0011", amount: 650, collateralRequired: 0.32, interest: 10.2, duration: 45, status: "Available", hasCounter: false },
-    { id: 19, lender: "0x44bBa...5566", amount: 1800, collateralRequired: 0.90, interest: 8.0, duration: 120, status: "Available", hasCounter: false },
-    { id: 20, lender: "0x11122...99aa", amount: 300, collateralRequired: 0.15, interest: 12.0, duration: 30, status: "Available", hasCounter: false }
-  ]);
-
-  // Làm mới thông tin số dư ví thông qua BrowserProvider của MetaMask
-  const refreshAccountData = async (userAddress) => {
-    if (!userAddress || !window.ethereum) return;
+  const refreshBalances = useCallback(async (addr) => {
+    if (!addr || !window.ethereum) return;
     try {
-      const freshProvider = new ethers.BrowserProvider(window.ethereum);
-      
-      const balance = await freshProvider.getBalance(userAddress);
-      setEthBalance(parseFloat(ethers.formatEther(balance)).toFixed(2));
+      const p = new ethers.BrowserProvider(window.ethereum);
+      const bal = await p.getBalance(addr);
+      setEthBalance(parseFloat(ethers.formatEther(bal)).toFixed(4));
+      const usdt = new ethers.Contract(USDT_ADDRESS, USDT_ABI, p);
+      const uBal = await usdt.balanceOf(addr);
+      setUsdtBalance(parseFloat(ethers.formatEther(uBal)).toFixed(2));
+    } catch (e) { console.error("Balance refresh:", e); }
+  }, []);
 
-      const usdtContract = new ethers.Contract(UsdtContractAddress, USDT_ABI, freshProvider);
-      const uBalance = await usdtContract.balanceOf(userAddress);
-      setUsdtBalance(ethers.formatEther(uBalance));
-
-      const allowance = await usdtContract.allowance(userAddress, LendChainContractAddress);
-      setCurrentAllowance(Number(ethers.formatEther(allowance)));
-    } catch (err) {
-      console.error("Failed to sync wallet data metrics:", err);
-    }
-  };
+  const fetchLoans = useCallback(async () => {
+    if (!provider) return;
+    try {
+      const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, provider);
+      const count = Number(await contract.loanCount());
+      const arr = [];
+      for (let i = 1; i <= count; i++) {
+        const l = await contract.loans(i);
+        arr.push({
+          id: i, borrower: l.borrower, lender: l.lender,
+          loanAmount: ethers.formatEther(l.loanAmount),
+          collateralAmount: ethers.formatEther(l.collateralAmount),
+          interestRate: Number(l.interestRate), duration: Number(l.duration),
+          repaymentDeadline: Number(l.repaymentDeadline),
+          status: Number(l.loanStatus), hasCounterOffer: l.hasCounterOffer
+        });
+      }
+      setLoans(arr);
+    } catch (e) { console.error("Fetch loans:", e); }
+  }, [provider]);
 
   const connectWallet = async () => {
-    if (window.ethereum) {
-      try {
-        await window.ethereum.request({
-          method: 'wallet_requestPermissions',
-          params: [{ eth_accounts: {} }]
-        });
-
-        const web3Provider = new ethers.BrowserProvider(window.ethereum);
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        const web3Signer = await web3Provider.getSigner();
-        
-        setAccount(accounts[0]);
-        setProvider(web3Provider);
-        setSigner(web3Signer);
-        
-        await refreshAccountData(accounts[0]);
-      } catch (error) {
-        console.error("User rejected wallet connection selection:", error);
-      }
-    } else {
-      alert("Please install MetaMask extension to interact with LendChain!");
-    }
+    if (!window.ethereum) { alert("Install MetaMask to use LendChain."); return; }
+    try {
+      const p = new ethers.BrowserProvider(window.ethereum);
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const s = await p.getSigner();
+      setAccount(accounts[0]); setProvider(p); setSigner(s);
+      await refreshBalances(accounts[0]);
+    } catch (e) { console.error("Connect:", e); }
   };
 
   useEffect(() => {
-    if (window.ethereum) {
-      const handleAccountsChanged = async (accounts) => {
-        if (accounts.length > 0) {
-          setAccount(accounts[0]);
-          const web3Provider = new ethers.BrowserProvider(window.ethereum);
-          const web3Signer = await web3Provider.getSigner();
-          setProvider(web3Provider);
-          setSigner(web3Signer);
-          await refreshAccountData(accounts[0]);
-        } else {
-          setAccount("");
-        }
-      };
-      window.ethereum.on('accountsChanged', handleAccountsChanged);
-      return () => window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
-    }
-  }, []);
+    if (!window.ethereum) return;
+    const handler = async (accounts) => {
+      if (accounts.length > 0) {
+        const p = new ethers.BrowserProvider(window.ethereum);
+        const s = await p.getSigner();
+        setAccount(accounts[0]); setProvider(p); setSigner(s);
+        await refreshBalances(accounts[0]);
+      } else setAccount("");
+    };
+    window.ethereum.on('accountsChanged', handler);
+    return () => window.ethereum.removeListener('accountsChanged', handler);
+  }, [refreshBalances]);
 
-  // 🆕 TỐI ƯU HÓA: Cơ chế quét lũy tiến (Progressive Polling) sau khi Deposit thành công
-  const handleDepositUSDT = async () => {
-    if (!signer) return;
-    const tokensToMint = parseInt(depositAmount);
-    if (isNaN(tokensToMint) || tokensToMint <= 0) {
-      alert("Please enter a valid positive USDT amount to deposit!");
-      return;
-    }
+  useEffect(() => { if (provider) fetchLoans(); }, [provider, fetchLoans]);
 
+  const runTx = async (label, fn) => {
     try {
-      setTxStatus("depositing");
-      const usdtContract = new ethers.Contract(UsdtContractAddress, USDT_ABI, signer);
-      
-      const amountInWei = ethers.parseEther(tokensToMint.toString());
-      const tx = await usdtContract.mint(account, amountInWei);
-      
-      setTxStatus("pending_tx");
-      await tx.wait(); 
-      
-      // 🚀 Thực thi cơ chế đa đồng bộ ngầm sau mỗi giây để ép UI bắt kịp MetaMask
-      await refreshAccountData(account);
-      setTimeout(() => refreshAccountData(account), 1000);
-      setTimeout(() => refreshAccountData(account), 2000);
-      setTimeout(() => refreshAccountData(account), 3000);
-      
-      alert(`Deposit Success! ${tokensToMint.toLocaleString()} USDT has been credited to your wallet.`);
-      setTxStatus("idle");
-    } catch (err) {
-      console.error("Deposit execution error:", err);
-      setTxStatus("idle");
+      setTxStatus("pending"); setTxMessage(label);
+      const tx = await fn();
+      if (tx?.wait) { setTxMessage(`${label} — confirming...`); await tx.wait(); }
+      await refreshBalances(account); await fetchLoans();
+      setTxStatus("idle"); setTxMessage(""); return true;
+    } catch (e) {
+      console.error(`${label}:`, e);
+      alert(`Error: ${e?.reason || e?.message || "Transaction failed"}`);
+      setTxStatus("idle"); setTxMessage(""); return false;
     }
   };
 
-  // Lender posts a new capital offer
-  const handleCreateLendingOffer = async (e) => {
-    e.preventDefault();
+  const handleMintUSDT = async () => {
     if (!signer) return;
-
-    const offerAmount = parseFloat(formData.amount);
-    if (Number(usdtBalance) < offerAmount) {
-      alert("Insufficient USDT balance to create this offer! Please deposit USDT using the action button above.");
-      return;
-    }
-
-    try {
-      if (currentAllowance < offerAmount) {
-        setTxStatus("approving");
-        const usdtContract = new ethers.Contract(UsdtContractAddress, USDT_ABI, signer);
-        const approveTx = await usdtContract.approve(LendChainContractAddress, ethers.parseEther("1000000"));
-        setTxStatus("pending_tx");
-        await approveTx.wait();
-        await refreshAccountData(account);
-      }
-
-      const newId = loans.length + 1;
-      const newOfferItem = {
-        id: newId,
-        lender: account.substring(0, 7) + "..." + account.substring(account.length - 4),
-        amount: offerAmount,
-        collateralRequired: parseFloat(formData.collateral),
-        interest: parseFloat(formData.interest),
-        duration: parseInt(formData.duration),
-        status: "Available",
-        hasCounter: false
-      };
-
-      setLoans([...loans, newOfferItem]);
-      alert("Success! Your lending capital offer has been safely listed on the Marketplace.");
-      setTxStatus("idle");
-      setActiveTab("market");
-    } catch (err) {
-      console.error(err);
-      setTxStatus("idle");
-    }
+    const amt = parseInt(depositAmount);
+    if (isNaN(amt) || amt <= 0) { alert("Enter a valid amount"); return; }
+    const usdt = new ethers.Contract(USDT_ADDRESS, USDT_ABI, signer);
+    await runTx("Minting USDT", () => usdt.mint(account, ethers.parseEther(amt.toString())));
   };
 
-  // Borrower initiates a Counter-Offer negotiation request
-  const handleNegotiateOffer = (id, targetApr) => {
-    const parsedApr = parseFloat(targetApr);
-    if (isNaN(parsedApr) || parsedApr <= 0 || parsedApr > 100) {
-      alert("Please enter a valid interest rate percentage (e.g., 5.5 or 8)!");
-      return;
-    }
-
-    setLoans(loans.map(l => l.id === id ? { ...l, interest: parsedApr, hasCounter: true } : l));
-    alert(`Negotiation submitted! You have proposed a custom counter interest rate of ${parsedApr}% APR.`);
+  const handleCreateLoan = async (e) => {
+    e.preventDefault(); if (!signer) return;
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    const ok = await runTx("Creating loan request", () =>
+      contract.createLoanRequest(ethers.parseEther(formData.amount), ethers.parseEther(formData.collateral), parseInt(formData.interest), parseInt(formData.duration))
+    );
+    if (ok) setActiveTab("market");
   };
 
-  // Borrower accepts the Lender's offer (Và đưa gói vay đó vào Active Positions)
-  const handleAcceptLoanOffer = async (loanId) => {
+  const handleCounterOffer = async (id) => {
     if (!signer) return;
-    
-    const loanItem = loans.find(l => l.id === loanId);
-    if (!loanItem) {
-      alert("Loan agreement pool not found!");
-      return;
-    }
-
-    const lendChainContract = new ethers.Contract(LendChainContractAddress, LENDCHAIN_ABI, signer);
-
-    try {
-      setActiveLoanId(loanId); 
-      setTxStatus("funding"); 
-      
-      const collateralInWei = ethers.parseEther(loanItem.collateralRequired.toString());
-      const tx = await lendChainContract.fundLoan(loanId, { value: collateralInWei });
-      
-      setTxStatus("pending_tx"); 
-      await tx.wait();
-      
-      // Chuyển trạng thái gói vay từ Available sang Active (Borrowed) thực tế trên UI
-      setLoans(loans.map(l => l.id === loanId ? { ...l, status: "Active (Borrowed)" } : l));
-      
-      // Đồng bộ hóa lũy tiến số dư
-      await refreshAccountData(account);
-      setTimeout(() => refreshAccountData(account), 1000);
-      setTimeout(() => refreshAccountData(account), 2000);
-      
-      alert(`Transaction verified! You have successfully locked ${loanItem.collateralRequired} ETH as escrow collateral and drawn the USDT funds.`);
-      setTxStatus("idle");
-      setActiveLoanId(null);
-    } catch (error) {
-      console.error(error);
-      setTxStatus("idle");
-      setActiveLoanId(null);
-    }
+    const val = counterInputs[id];
+    if (!val || isNaN(parseInt(val))) { alert("Enter a valid rate"); return; }
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    const loan = loans.find(l => l.id === id);
+    await runTx("Submitting counter-offer", () => contract.submitCounterOffer(id, parseInt(val), loan.duration));
   };
 
-  // Hàm xử lý tất toán nợ
-  const handleRepayLoan = async (loanId) => {
+  const handleAcceptCounter = async (id) => {
     if (!signer) return;
-    const lendChainContract = new ethers.Contract(LendChainContractAddress, LENDCHAIN_ABI, signer);
-
-    try {
-      setActiveLoanId(loanId); 
-      setTxStatus("repaying"); 
-      
-      const tx = await lendChainContract.repayLoan(loanId);
-      setTxStatus("pending_tx");
-      await tx.wait(); 
-      
-      setLoans(loans.map(l => l.id === loanId ? { ...l, status: "Repaid" } : l));
-      
-      await refreshAccountData(account);
-      setTimeout(() => refreshAccountData(account), 1000);
-      setTimeout(() => refreshAccountData(account), 2000);
-      
-      alert("Repayment verified! Your outstanding loan balance has been paid, and your locked ETH collateral has been safely returned to your wallet.");
-      setTxStatus("idle");
-      setActiveLoanId(null); 
-    } catch (error) {
-      console.error("Repayment execution error:", error);
-      setTxStatus("idle");
-      setActiveLoanId(null);
-    }
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    await runTx("Accepting counter-offer", () => contract.acceptCounterOffer(id));
   };
 
-  // Modern Slate-Dark Web3 Theme Token Definitions
-  const styles = {
-    container: { backgroundColor: '#0f172a', color: '#f8fafc', minHeight: '100vh', fontFamily: 'Segoe UI, sans-serif', padding: '30px' },
-    header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #334155', paddingBottom: '20px', marginBottom: '30px' },
-    navBtn: { padding: '10px 20px', background: 'transparent', color: '#94a3b8', border: 'none', cursor: 'pointer', fontSize: '16px', fontWeight: '600' },
-    activeNavBtn: { padding: '10px 20px', background: '#1e293b', color: '#10b981', borderBottom: '3px solid #10b981', cursor: 'pointer', fontSize: '16px', fontWeight: '600' },
-    walletCard: { backgroundColor: '#1e293b', borderRadius: '12px', padding: '15px 25px', border: '1px solid #334155', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.5)', width: '310px' },
-    grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px', marginTop: '20px' },
-    card: { backgroundColor: '#1e293b', borderRadius: '16px', padding: '20px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '12px' },
-    badge: (status) => ({ backgroundColor: status === "Active (Borrowed)" ? '#065f46' : '#1e3a8a', color: status === "Active (Borrowed)" ? '#34d399' : '#60a5fa', padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold', width: 'fit-content' }),
-    button: { width: '100%', padding: '12px', backgroundColor: '#10b981', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', marginTop: '5px' },
-    secondaryBtn: { width: '100%', padding: '10px', backgroundColor: '#334155', color: '#cbd5e1', border: 'none', borderRadius: '8px', fontWeight: '600', cursor: 'pointer' },
-    input: { width: '100%', padding: '12px', backgroundColor: '#0f172a', border: '1px solid #475569', borderRadius: '8px', color: '#fff', marginTop: '5px', boxSizing: 'border-box' },
-    landingWrapper: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '65vh', textAlign: 'center', gap: '20px' },
-    connectBigBtn: { padding: '16px 40px', fontSize: '18px', backgroundColor: '#10b981', color: '#fff', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 10px 15px -3px rgba(16, 185, 129, 0.4)', transition: 'all 0.2s' }
+  const handleRejectCounter = async (id) => {
+    if (!signer) return;
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    await runTx("Rejecting counter-offer", () => contract.rejectCounterOffer(id));
+  };
+
+  const handleDepositCollateral = async (id) => {
+    if (!signer) return;
+    const loan = loans.find(l => l.id === id);
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    await runTx("Depositing ETH collateral", () => contract.depositCollateral(id, { value: ethers.parseEther(loan.collateralAmount) }));
+  };
+
+  const handleFundLoan = async (id) => {
+    if (!signer) return;
+    const loan = loans.find(l => l.id === id);
+    const usdt = new ethers.Contract(USDT_ADDRESS, USDT_ABI, signer);
+    const amt = ethers.parseEther(loan.loanAmount);
+    const allowance = await usdt.allowance(account, LENDCHAIN_ADDRESS);
+    if (allowance < amt) {
+      const ok = await runTx("Approving USDT", () => usdt.approve(LENDCHAIN_ADDRESS, amt));
+      if (!ok) return;
+    }
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    await runTx("Funding loan", () => contract.fundLoan(id));
+  };
+
+  const handleRepayLoan = async (id) => {
+    if (!signer) return;
+    const loan = loans.find(l => l.id === id);
+    const total = parseFloat(loan.loanAmount) * (1 + loan.interestRate / 100);
+    const totalWei = ethers.parseEther(total.toString());
+    const usdt = new ethers.Contract(USDT_ADDRESS, USDT_ABI, signer);
+    const allowance = await usdt.allowance(account, LENDCHAIN_ADDRESS);
+    if (allowance < totalWei) {
+      const ok = await runTx("Approving USDT for repayment", () => usdt.approve(LENDCHAIN_ADDRESS, totalWei));
+      if (!ok) return;
+    }
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    await runTx("Repaying loan", () => contract.repayLoan(id));
+  };
+
+  const handleClaimCollateral = async (id) => {
+    if (!signer) return;
+    const contract = new ethers.Contract(LENDCHAIN_ADDRESS, LENDCHAIN_ABI, signer);
+    await runTx("Claiming collateral", () => contract.claimCollateral(id));
+  };
+
+  const fmtAddr = (a) => a === ethers.ZeroAddress ? "\u2014" : `${a.slice(0,6)}...${a.slice(-4)}`;
+  const isMe = (a) => a?.toLowerCase() === account?.toLowerCase();
+  const daysFromSecs = (s) => { const d = Math.round(s / 86400); return d > 0 ? `${d} days` : `${s} sec`; };
+
+  const pendingLoans = loans.filter(l => l.status === 0);
+  const activeLoans = loans.filter(l => l.status === 1);
+  const myLoans = loans.filter(l => isMe(l.borrower) || isMe(l.lender));
+
+  const LoanCard = ({ loan, idx }) => {
+    const isBorrower = isMe(loan.borrower);
+    const isLender = isMe(loan.lender);
+    const isPending = loan.status === 0;
+    const isActive = loan.status === 1;
+    const now = Math.floor(Date.now() / 1000);
+    const isOverdue = isActive && loan.repaymentDeadline > 0 && now > loan.repaymentDeadline;
+    const repayTotal = (parseFloat(loan.loanAmount) * (1 + loan.interestRate / 100)).toFixed(2);
+    const statusClass = ["pending","active","repaid","defaulted"][loan.status];
+    const badgeClass = isOverdue ? "badge badge-overdue" : `badge badge-${statusClass}`;
+
+    return (
+      <div className={`loan-card ${statusClass} fade-in`} style={{ animationDelay: `${idx * 0.05}s` }}>
+        <div className="card-header">
+          <span className="loan-id">#{loan.id}</span>
+          <span className={badgeClass}>{isOverdue ? "Overdue" : STATUS[loan.status]}</span>
+        </div>
+
+        <div className="address-row">
+          Borrower: <span className={isBorrower ? "address-you" : "address-other"}>{fmtAddr(loan.borrower)}{isBorrower && " (you)"}</span>
+          {loan.lender !== ethers.ZeroAddress && (<>
+            {" \u00b7 "}Lender: <span className={isLender ? "address-you" : "address-other"}>{fmtAddr(loan.lender)}{isLender && " (you)"}</span>
+          </>)}
+        </div>
+
+        <div className="divider" />
+
+        <div className="terms-grid">
+          <div className="term">Amount <div className="term-value green">{parseFloat(loan.loanAmount).toLocaleString()} USDT</div></div>
+          <div className="term">Collateral <div className="term-value white">{loan.collateralAmount} ETH</div></div>
+          <div className="term">Rate <div className="term-value amber">{loan.interestRate}%</div></div>
+          <div className="term">Duration <div className="term-value white">{daysFromSecs(loan.duration)}</div></div>
+          {isActive && loan.repaymentDeadline > 0 && (
+            <div className="term term-full">
+              Repay total <span className="term-value amber" style={{marginLeft:8}}>{repayTotal} USDT</span>
+              {isOverdue && <span className="term-value red" style={{marginLeft:8}}>OVERDUE</span>}
+            </div>
+          )}
+        </div>
+
+        {isPending && loan.hasCounterOffer && (
+          <div className="counter-banner">
+            <span className="counter-label">Counter-offer active</span> — New rate: {loan.interestRate}%
+          </div>
+        )}
+
+        <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:4}}>
+          {isPending && isBorrower && (
+            <button className="btn btn-primary" disabled={txStatus!=="idle"} onClick={()=>handleDepositCollateral(loan.id)}>
+              Deposit {loan.collateralAmount} ETH collateral
+            </button>
+          )}
+          {isPending && isBorrower && loan.hasCounterOffer && (
+            <div className="btn-row">
+              <button className="btn btn-sm btn-primary" onClick={()=>handleAcceptCounter(loan.id)}>Accept</button>
+              <button className="btn btn-sm btn-red" onClick={()=>handleRejectCounter(loan.id)}>Reject</button>
+            </div>
+          )}
+          {isPending && !isBorrower && !loan.hasCounterOffer && (
+            <div className="counter-row">
+              <input type="number" step="1" placeholder="Rate %" className="input input-sm"
+                value={counterInputs[loan.id]||""} onChange={(e)=>setCounterInputs({...counterInputs,[loan.id]:e.target.value})} />
+              <button className="btn btn-sm btn-blue" onClick={()=>handleCounterOffer(loan.id)}>Counter-offer</button>
+            </div>
+          )}
+          {isPending && !isBorrower && (
+            <button className="btn btn-blue" disabled={txStatus!=="idle"} onClick={()=>handleFundLoan(loan.id)}>
+              Fund loan ({loan.loanAmount} USDT)
+            </button>
+          )}
+          {isActive && isBorrower && !isOverdue && (
+            <button className="btn btn-primary" disabled={txStatus!=="idle"} onClick={()=>handleRepayLoan(loan.id)}>
+              Repay {repayTotal} USDT
+            </button>
+          )}
+          {isActive && isLender && isOverdue && (
+            <button className="btn btn-red" disabled={txStatus!=="idle"} onClick={()=>handleClaimCollateral(loan.id)}>
+              Claim {loan.collateralAmount} ETH collateral
+            </button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   return (
-    <div style={styles.container}>
-      {/* GLOBAL NAVBAR & WALLET STATUS */}
-      <header style={styles.header}>
+    <div className="page">
+      <header className="header">
         <div>
-          <h1 style={{ margin: 0, fontSize: '28px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span>🌐</span> LendChain P2P Capital Hub
-          </h1>
-          <p style={{ color: '#94a3b8', margin: '5px 0 0 0' }}>Lender-Driven Liquidity Marketplace Powered by Smart Contracts</p>
+          <div className="logo"><div className="logo-icon">LC</div> LendChain</div>
+          <p className="subtitle">Peer-to-peer crypto lending on Ethereum</p>
         </div>
-        
         {account && (
-          <div style={styles.walletCard}>
-            <div style={{ fontSize: '13px', color: '#94a3b8' }}>Active User: <span style={{ color: '#38bdf8' }}>{account.substring(0,6)}...{account.substring(account.length-4)}</span></div>
-            <div style={{ display: 'flex', gap: '20px', marginTop: '8px', fontSize: '15px', fontWeight: 'bold' }}>
-              <div>💰 Balance: <span style={{ color: '#fbbf24' }}>{ethBalance} ETH</span></div>
-              <div>💵 Tokens: <span style={{ color: '#10b981' }}>{parseFloat(usdtBalance).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT</span></div>
+          <div className="wallet-card">
+            <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:6}}>
+              Connected: <span className="wallet-address">{fmtAddr(account)}</span>
             </div>
-            
-            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-              <input 
-                type="number" 
-                style={{ ...styles.input, marginTop: 0, padding: '6px 10px', width: '95px', height: '34px', fontSize: '13px', textAlign: 'center' }} 
-                value={depositAmount} 
-                onChange={(e) => setDepositAmount(e.target.value)} 
-                placeholder="Amount"
-              />
-              <button 
-                disabled={txStatus === "depositing" || txStatus === "pending_tx"} 
-                onClick={handleDepositUSDT} 
-                style={{ background: '#0284c7', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', fontSize: '12px', cursor: 'pointer', flex: 1, fontWeight: 'bold', height: '34px' }}
-              >
-                {txStatus === "depositing" && "Sending..."}
-                {txStatus === "pending_tx" && "Syncing..."}
-                {txStatus === "idle" && "📥 Deposit USDT"}
+            <div className="balance-row">
+              <span className="balance-item"><span className="balance-value balance-eth">{ethBalance}</span> ETH</span>
+              <span className="balance-item"><span className="balance-value balance-usdt">{parseFloat(usdtBalance).toLocaleString()}</span> USDT</span>
+            </div>
+            <div className="mint-row">
+              <input type="number" className="input input-sm" value={depositAmount} onChange={(e)=>setDepositAmount(e.target.value)} />
+              <button className="btn btn-sm btn-blue" style={{flex:1}} disabled={txStatus!=="idle"} onClick={handleMintUSDT}>
+                Mint test USDT
               </button>
             </div>
           </div>
         )}
       </header>
 
-      {/* ONBOARDING FLOW FOR CHOOSE ACCOUNT WALLET */}
       {!account ? (
-        <div style={styles.landingWrapper}>
-          <div style={{ fontSize: '64px' }}>🔒</div>
-          <h2 style={{ margin: 0, fontSize: '32px' }}>Welcome to LendChain Platform</h2>
-          <p style={{ color: '#94a3b8', maxWidth: '450px', margin: 0, lineHeight: '1.6' }}>
-            Please authenticate and select your preferred crypto wallet account from MetaMask to access the decentralized dashboard.
-          </p>
-          <button style={styles.connectBigBtn} onClick={connectWallet}>
-            🔌 Select Wallet Account & Connect
-          </button>
+        <div className="landing fade-in">
+          <div className="landing-icon">&#x1f512;</div>
+          <h2>Welcome to LendChain</h2>
+          <p>Connect your MetaMask wallet to access the decentralized P2P lending marketplace on the local Hardhat network.</p>
+          <button className="connect-btn" onClick={connectWallet}>Connect wallet</button>
         </div>
       ) : (
         <>
-          {/* NAVIGATION TAB BAR */}
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '25px', borderBottom: '1px solid #1e293b' }}>
-            <button style={activeTab === "market" ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab("market")}>🛒 Loan Marketplace (Lender Offers)</button>
-            <button style={activeTab === "create" ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab("create")}>✍️ Create Lending Offer</button>
-            <button style={activeTab === "dashboard" ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab("dashboard")}>📊 My Active Positions</button>
+          {txStatus !== "idle" && (
+            <div className="status-bar slide-in">
+              <span className="spinner">&#x23f3;</span> {txMessage}
+            </div>
+          )}
+
+          <div className="tab-bar">
+            {[["market","Marketplace"],["create","Create loan"],["dashboard","My loans"]].map(([k,l])=>(
+              <button key={k} className={`tab ${activeTab===k?"active":""}`} onClick={()=>setActiveTab(k)}>{l}</button>
+            ))}
           </div>
 
-          {/* TAB 1: LOAN MARKETPLACE */}
           {activeTab === "market" && (
-            <div>
-              <h3 style={{ margin: '0 0 10px 0' }}>Available Capital Pools Posted by Lenders</h3>
-              <div style={styles.grid}>
-                {loans.map((loan) => (
-                  <div key={loan.id} style={styles.card}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontWeight: 'bold', color: '#38bdf8' }}>Pool ID: #{loan.id}</span>
-                      <span style={styles.badge(loan.status)}>{loan.status}</span>
-                    </div>
-                    <div style={{ fontSize: '14px', color: '#cbd5e1' }}>👤 Supplier/Lender: {loan.lender}</div>
-                    <hr style={{ border: '0', borderTop: '1px solid #334155', margin: '5px 0' }} />
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '14px' }}>
-                      <div>Available Funds: <b style={{ color: '#10b981' }}>{loan.amount} USDT</b></div>
-                      <div>Required Collateral: <b>{loan.collateralRequired} ETH</b></div>
-                      <div>Interest Rate: <b style={{ color: '#fbbf24' }}>{loan.interest}% APR</b></div>
-                      <div>Duration Terms: <b>{loan.duration} Days</b></div>
-                    </div>
-                    
-                    {loan.status === "Available" && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
-                        <button disabled={txStatus !== "idle"} onClick={() => handleAcceptLoanOffer(loan.id)} style={styles.button}>
-                          {txStatus === "funding" && activeLoanId === loan.id ? "Locking Collateral ETH..." : "Accept Loan & Lock Collateral"}
-                        </button>
-                        
-                        <hr style={{ border: '0', borderTop: '1px solid #334155', margin: '4px 0' }} />
-                        
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                          <input 
-                            type="number" 
-                            step="0.1"
-                            style={{ ...styles.input, marginTop: 0, padding: '8px 12px', fontSize: '13px', flex: 1, textAlign: 'center' }} 
-                            value={counterInputs[loan.id] || ""} 
-                            onChange={(e) => setCounterInputs({ ...counterInputs, [loan.id]: e.target.value })} 
-                            placeholder="Custom APR %" 
-                          />
-                          <button 
-                            onClick={() => handleNegotiateOffer(loan.id, counterInputs[loan.id])} 
-                            style={{ ...styles.secondaryBtn, width: 'auto', padding: '10px 15px', whiteSpace: 'nowrap' }}
-                          >
-                            {loan.hasCounter ? "🔄 Update Bid" : "🤝 Propose Counter"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
+            <div className="fade-in">
+              <p className="summary">
+                {pendingLoans.length} pending · {activeLoans.length} active · {loans.length} total on-chain
+                {loans.length===0 && " — create a loan to get started."}
+              </p>
+              <div className="loan-grid">
+                {loans.filter(l=>l.status<=1).map((loan,i)=><LoanCard key={loan.id} loan={loan} idx={i}/>)}
               </div>
             </div>
           )}
 
-          {/* TAB 2: LENDER CREATES OFFER */}
           {activeTab === "create" && (
-            <div style={{ maxWidth: '500px', backgroundColor: '#1e293b', padding: '30px', borderRadius: '16px', border: '1px solid #334155' }}>
-              <h3 style={{ margin: '0 0 20px 0', color: '#10b981' }}>Deploy New Capital Funding Pool</h3>
-              <form onSubmit={handleCreateLendingOffer} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                <div>
-                  <label style={{ fontSize: '14px', color: '#94a3b8' }}>Total Amount to Lend (USDT):</label>
-                  <input type="number" style={styles.input} value={formData.amount} onChange={(e) => setFormData({...formData, amount: e.target.value})} required />
+            <div className="form-card fade-in">
+              <div className="form-title">Create a loan request</div>
+              <div className="form-desc">As a borrower, specify the USDT you need and the ETH collateral you will lock.</div>
+              <form onSubmit={handleCreateLoan} className="form-stack">
+                <div><label className="label">Loan amount (USDT)</label><input type="number" className="input" value={formData.amount} onChange={(e)=>setFormData({...formData,amount:e.target.value})} required /></div>
+                <div><label className="label">Collateral (ETH)</label><input type="number" step="0.01" className="input" value={formData.collateral} onChange={(e)=>setFormData({...formData,collateral:e.target.value})} required /></div>
+                <div className="form-grid">
+                  <div><label className="label">Interest rate (%)</label><input type="number" className="input" value={formData.interest} onChange={(e)=>setFormData({...formData,interest:e.target.value})} required /></div>
+                  <div><label className="label">Duration (seconds)</label><input type="number" className="input" value={formData.duration} onChange={(e)=>setFormData({...formData,duration:e.target.value})} required /></div>
                 </div>
-                <div>
-                  <label style={{ fontSize: '14px', color: '#94a3b8' }}>Required Borrower Collateral (ETH):</label>
-                  <input type="number" step="0.01" style={styles.input} value={formData.collateral} onChange={(e) => setFormData({...formData, collateral: e.target.value})} required />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-                  <div>
-                    <label style={{ fontSize: '14px', color: '#94a3b8' }}>Target Interest Rate (% APR):</label>
-                    <input type="number" style={styles.input} value={formData.interest} onChange={(e) => setFormData({...formData, interest: e.target.value})} required />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: '14px', color: '#94a3b8' }}>Lockup Duration (Days):</label>
-                    <input type="number" style={styles.input} value={formData.duration} onChange={(e) => setFormData({...formData, duration: e.target.value})} required />
-                  </div>
-                </div>
-                <button type="submit" style={{ ...styles.button, marginTop: '15px', backgroundColor: '#3b82f6' }}>
-                  {txStatus === "approving" && "1/2: Granting Contract Token Allowance..."}
-                  {txStatus === "pending_tx" && "2/2: Confirming Smart Contract Listing..."}
-                  {txStatus === "idle" && "🚀 Approve & List Capital Pool"}
+                <button type="submit" className="btn btn-primary" disabled={txStatus!=="idle"}>
+                  {txStatus!=="idle"?txMessage:"Submit loan request"}
                 </button>
               </form>
             </div>
           )}
 
-          {/* TAB 3: USER ACTIVE POSITIONS */}
           {activeTab === "dashboard" && (
-            <div>
-              <h3 style={{ margin: '0 0 10px 0' }}>Your Active Borrowed Agreements</h3>
-              <div style={styles.grid}>
-                {loans.filter(l => l.status === "Active (Borrowed)").length === 0 ? (
-                  <p style={{ color: '#94a3b8', fontSize: '15px', marginTop: '10px' }}>No active borrowed positions found. Please head to the Marketplace to accept an offer and lock collateral.</p>
-                ) : (
-                  loans.filter(l => l.status === "Active (Borrowed)").map((loan) => (
-                    <div key={loan.id} style={{ ...styles.card, borderLeft: '5px solid #ef4444' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 'bold' }}>Agreement ID: #{loan.id}</span>
-                        <span style={{ ...styles.badge(loan.status) }}>Active</span>
-                      </div>
-                      <div style={{ fontSize: '14px' }}>💵 Total Outstanding Balance: <b>{loan.amount * 1.05} USDT</b></div>
-                      <div style={{ fontSize: '12px', color: '#94a3b8' }}>Maturity Deadline: Due in {loan.duration} days.</div>
-                      
-                      <button 
-                        disabled={txStatus !== "idle"} 
-                        onClick={() => handleRepayLoan(loan.id)} 
-                        style={{ ...styles.button, backgroundColor: '#ef4444' }}
-                      >
-                        {txStatus === "repaying" && activeLoanId === loan.id ? "Processing Repayment..." : "💳 Repay Loan & Reclaim ETH Collateral"}
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
+            <div className="fade-in">
+              <p className="summary">Loans where you are the borrower or lender.</p>
+              {myLoans.length===0 ? (
+                <div className="empty-state">No loans found for your address. Create a loan or fund an existing one.</div>
+              ) : (
+                <div className="loan-grid">
+                  {myLoans.map((loan,i)=><LoanCard key={loan.id} loan={loan} idx={i}/>)}
+                </div>
+              )}
             </div>
           )}
         </>
