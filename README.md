@@ -1,42 +1,134 @@
-Installation & Local Deployment Setup
-Follow these sequential steps to compile, deploy, and execute the LendChain ecosystem locally under your sandbox node instance.
-
-Prerequisites
-Node.js (v18.0.0 or higher recommended)
-
-MetaMask Extension configured on your web browser.
-
-1. Network Initialization & Smart Contract Compilation
-Open an independent Terminal window to spin up your local in-memory blockchain node infrastructure:
-
-Bash
+# LendChain: Decentralized Bilateral P2P Lending Protocol
+ 
+LendChain is a trust-minimized, peer-to-peer crypto lending decentralized application (dApp) developed for **INTE264[1|2]: Blockchain Technology Fundamentals**. Unlike traditional pooled liquidity systems, LendChain allows borrowers and lenders to engage in direct, customized term negotiations—enforcing parameters (collateral requirements, durations, and interest rates) deterministically via Solidity smart contracts on an Ethereum environment.
+ 
+This repository is split into two primary workspaces:
+* `/backend`: Solidity smart contracts, deployment scripts, and Hardhat testing pipelines.
+* `/frontend`: React single-page application built with Ethers.js (v6) and MetaMask integration.
+ 
+---
+ 
+## 🛠️ Prerequisites
+Before initializing the application, ensure you have the following software suites installed locally:
+* **Node.js**: `v18.0.0` or higher recommended.
+* **MetaMask Browser Extension**: Installed on your preferred web browser.
+ 
+---
+ 
+## Local Deployment & Environment Setup
+ 
+Follow these sequential steps to compile your smart contracts, spin up a local sandbox blockchain network, and host the web interface layout.
+ 
+### Step 1: Network Initialization & Contract Compilation
+Open an independent terminal window to launch your local, in-memory development blockchain node:
+ 
+```bash
+# Navigate to the backend directory
 cd backend
-
+ 
+# Install development and testing dependencies
 npm install
-
+ 
+# Initialize local Hardhat development blockchain node
 npx hardhat node
-Leave this terminal window running continuously to host the network pipeline.
-
-2. Explicit Contract Deployment Execution
-Open a secondary terminal window to execute the custom deployment pipeline script:
-
+Leave this terminal instance running continuously. It acts as your local RPC infrastructure provider, hosting 20 pre-funded test accounts loaded with mock ETH.
+ 
+Step 2: Smart Contract Deployment
+Open a secondary terminal window to execute the custom deployment pipeline script over your running local network:
+ 
 Bash
-node scripts/deploy.js
+# Navigate to backend directory
+cd backend
+ 
+# Deploy smart contracts to the active localhost network instances
+npx hardhat run scripts/deploy.js --network localhost
 Upon successful execution, the terminal logs will output the explicit contract coordinates:
-
+ 
 MockUSDT Address: 0x5FbDB2315678afecb367f032d93F642f64180aa3
-
+ 
 LendChain Address: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
-
-3. Frontend Giao Diện UI Initialization
-Open a third independent terminal instance to boot up your React Web Server app layout:
-
+ 
+Note: Ensure these addresses match your frontend configuration files (e.g., /frontend/src/config.js or .env) so the user interface binds seamlessly with your newly deployed contract instances.
+ 
+Step 3: Frontend Interface Initialization
+Open a third independent terminal instance to boot up your React development engine server:
+ 
 Bash
-
-cd ../frontend
-
-
+# Navigate into the frontend workspace
+cd frontend
+ 
+# Install user interface rendering dependencies
 npm install
-
+ 
+# Launch the React Web App Development server
 npm start
-The browser will automatically spin up the interface dashboard panel at: http://localhost:3001 or http://localhost:3000.
+The application will automatically spin up the interactive user dashboard panel at: http://localhost:3000 (or http://localhost:3001).
+ 
+🦊 Crucial Step: MetaMask Wallet Configuration
+To successfully interact with the local dApp interface, you must configure MetaMask to process transactions through your local Hardhat node environment.
+ 
+1. Add the Hardhat Localhost Network to MetaMask
+Open your MetaMask browser extension, click the Network Selector dropdown in the top-left corner, and select Add network -> Add a network manually.
+ 
+Input the exact RPC parameters detailed below:
+ 
+Network name: Hardhat Localhost
+ 
+New RPC URL: http://127.0.0.1:8545
+ 
+Chain ID: 31337
+ 
+Currency symbol: ETH
+ 
+Click Save and switch your wallet network to Hardhat Localhost.
+ 
+2. Import Test Accounts (Simulating Borrower and Lender)
+Because your local chain is blank, your personal MetaMask accounts will show 0 ETH. You must import the pre-funded private keys displayed in your Step 1 Terminal Window (where npx hardhat node is executing).
+ 
+In your MetaMask extension, click your Account Profile Icon (top right circular icon) and select Import account.
+ 
+Copy one of the private keys generated by the Hardhat terminal initialization logs (e.g., Account #0 for the Borrower and Account #1 for the Lender) and paste it into the field.
+ 
+Click Import. The account will instantly display a balance of ~10,000 test ETH.
+ 
+Tip for Grader: Import at least two separate accounts to simulate the full peer-to-peer negotiation, deposit, and funding flow between a distinct borrower and lender.
+ 
+Step-by-Step Demo Guide (How to Interact)
+To thoroughly validate the core architectural requirements of the LendChain protocol, run through this baseline user lifecycle flow:
+ 
+Phase 1: Request Creation & Token Minting
+Connect MetaMask to the platform using your imported Borrower Wallet.
+ 
+Since the local network utilizes a mock stablecoin representation for USDT, navigate to the testing utility area on the interface and click Mint Test USDT to load your lender and borrower profiles with baseline operational assets.
+ 
+Navigate to the Create Loan page and input a request (e.g., Borrow 100 USDT using 0.15 ETH as locked collateral for a duration of 1 week). Click submit and sign the createLoanRequest() transaction payload in MetaMask.
+ 
+Phase 2: Term Negotiation & Funding
+Switch your MetaMask profile to your imported Lender Wallet.
+ 
+Browse the Marketplace View dashboard, click on the open pending request, and choose to Submit Counter-Offer to adjust the parameters (e.g., elevating the interest rate).
+ 
+Switch back to the Borrower Wallet to approve and seal the counter-offer on-chain.
+ 
+As the Borrower, execute the Deposit Collateral transaction to lock the required ETH safely inside the smart contract state machine custody.
+ 
+Switch to the Lender Wallet. Due to standard ERC-20 design safety specifications, funding requires a two-step approval transaction mechanism:
+ 
+Click Approve USDT first to authorize the LendChain contract to move your tokens.
+ 
+Once confirmed on-chain, click Fund Loan to execute the underlying fundLoan() script and disburse assets directly into the borrower's custody.
+ 
+Phase 3: Testing Default Parameters (Hardhat Time Travel)
+To successfully demonstrate Phase 6 (Default Handling) without waiting a full week for the block timestamp deadline to expire naturally, you can explicitly trigger Hardhat’s network-level time manipulation RPC commands.
+ 
+Run this quick macro command in your backend terminal environment to fast-forward the EVM system clock past your loan deadline:
+ 
+Bash
+# Advance blockchain network execution clock by 8 days (691200 seconds) and mine an empty block
+npx hardhat eval "await network.provider.send('evm_increaseTime', [691200]); await network.provider.send('evm_mine');"
+Refresh your frontend application. The target active loan status on your dashboard will immediately update to Overdue, allowing the lender account to successfully invoke claimCollateral() and collect the locked ETH collateral payout cleanly.
+ 
+⚖️ Academic & LLM Attribution
+This project is compiled and maintained in strict compliance with the evaluation criteria for RMIT University course INTE2641/INTE2642.
+ 
+Large Language Model (LLM) Citation: Consistent with course documentation policies, generative tools (Gemini/ChatGPT) were selectively deployed during the engineering cycle to debug asynchronous frontend Ethers.js state updates, draft Hardhat network time-travel verification commands, and refine markdown installation sequences.
