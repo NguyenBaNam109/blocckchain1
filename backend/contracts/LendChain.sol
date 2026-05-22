@@ -30,6 +30,7 @@ contract LendChain {
         uint256 repaymentDeadline; // Unix epoch timestamp marking the absolute repayment limit
         LoanStatus loanStatus;     // The current FSM state of the loan instance
         bool hasCounterOffer;      // Flag denoting if a negotiation counter-offer is active
+        bool collateralLocked;     // Flag confirming borrower has deposited ETH collateral
     }
 
     // Address of the USDT token contract (or Mock USDT deployed on Sepolia)
@@ -82,7 +83,8 @@ contract LendChain {
             duration: _duration,
             repaymentDeadline: 0,
             loanStatus: LoanStatus.Pending,
-            hasCounterOffer: false
+            hasCounterOffer: false,
+            collateralLocked: false
         });
 
         emit LoanRequestCreated(loanCount, msg.sender, _loanAmount, _collateralAmount);
@@ -142,6 +144,7 @@ contract LendChain {
         require(msg.sender == loan.borrower, "Only the designated borrower can deposit");
         require(msg.value == loan.collateralAmount, "Transferred ETH value does not match terms");
 
+        loan.collateralLocked = true;
         emit CollateralDeposited(_loanId, msg.value);
     }
 
@@ -151,7 +154,8 @@ contract LendChain {
     function fundLoan(uint256 _loanId) external {
         Loan storage loan = loans[_loanId];
         require(loan.loanStatus == LoanStatus.Pending, "Loan target must be in a Pending state");
-        
+        require(loan.collateralLocked, "Borrower has not deposited collateral yet");
+
         if (loan.hasCounterOffer) {
             require(msg.sender == loan.lender, "Unauthorized: You are not the accepted lender");
         } else {
